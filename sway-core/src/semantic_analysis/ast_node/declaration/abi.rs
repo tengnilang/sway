@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use sway_error::error::CompileError;
 use sway_types::{Ident, Span, Spanned};
 
-use crate::decl_engine::{DeclEngineInsert, DeclId};
+use crate::{decl_engine::{DeclEngineInsert, DeclId}, TypeParameter};
 use sway_error::handler::{ErrorEmitted, Handler};
 
 use crate::{
@@ -16,7 +16,7 @@ use crate::{
     semantic_analysis::{
         declaration::insert_supertraits_into_namespace, AbiMode, TypeCheckContext,
     },
-    ReplaceSelfType, TypeId, TypeInfo,
+    TypeId, TypeInfo,
 };
 
 impl ty::TyAbiDecl {
@@ -42,18 +42,21 @@ impl ty::TyAbiDecl {
         // A temporary namespace for checking within this scope.
         let type_engine = ctx.engines.te();
         let mut abi_namespace = ctx.namespace.clone();
-        let self_type = type_engine.insert(ctx.engines(), TypeInfo::SelfType);
         let mut ctx = ctx
             .scoped(&mut abi_namespace)
-            .with_abi_mode(AbiMode::ImplAbiFn(name.clone(), None))
-            .with_self_type(self_type);
+            .with_abi_mode(AbiMode::ImplAbiFn(name.clone(), None));
+
+           // Insert the "self" type param into the namespace.
+        let self_type_param = TypeParameter::new_self_type(ctx.engines, name.span());
+        let self_type_id = self_type_param.type_id;
+        self_type_param.insert_self_type_into_namespace(handler, ctx.by_ref());
 
         // Recursively make the interface surfaces and methods of the
         // supertraits available to this abi.
         insert_supertraits_into_namespace(
             handler,
             ctx.by_ref(),
-            self_type,
+            self_type_id,
             &supertraits,
             &SupertraitOf::Abi(span.clone()),
         )?;
@@ -67,10 +70,9 @@ impl ty::TyAbiDecl {
             |method_name: &Ident, ctx: &mut TypeCheckContext| {
                 if let Ok(superabi_impl_method_ref) = ctx.namespace.find_method_for_type(
                     &Handler::default(),
-                    ctx.self_type(),
+                    self_type_id,
                     &[],
                     &method_name.clone(),
-                    ctx.self_type(),
                     ctx.type_annotation(),
                     &Default::default(),
                     None,
@@ -212,10 +214,9 @@ impl ty::TyAbiDecl {
                             // looking for conflicting ABI methods for triangle-like ABI hierarchies
                             if let Ok(superabi_method_ref) = ctx.namespace.find_method_for_type(
                                 &Handler::default(),
-                                ctx.self_type(),
+                                type_id,
                                 &[],
                                 &method.name.clone(),
-                                ctx.self_type(),
                                 ctx.type_annotation(),
                                 &Default::default(),
                                 None,
@@ -251,7 +252,6 @@ impl ty::TyAbiDecl {
                                 }
                             }
                         }
-                        method.replace_self_type(engines, type_id);
                         all_items.push(TyImplItem::Fn(
                             ctx.engines
                                 .de()
@@ -289,10 +289,9 @@ impl ty::TyAbiDecl {
                         // and reused for interface methods if the issue of mutable ctx is solved
                         if let Ok(superabi_impl_method_ref) = ctx.namespace.find_method_for_type(
                             &Handler::default(),
-                            ctx.self_type(),
+                            type_id,
                             &[],
                             &method.name.clone(),
-                            ctx.self_type(),
                             ctx.type_annotation(),
                             &Default::default(),
                             None,
@@ -315,7 +314,6 @@ impl ty::TyAbiDecl {
                                 }
                             }
                         }
-                        method.replace_self_type(engines, type_id);
                         all_items.push(TyImplItem::Fn(
                             ctx.engines
                                 .de()
@@ -325,7 +323,6 @@ impl ty::TyAbiDecl {
                     }
                     ty::TyTraitItem::Constant(decl_ref) => {
                         let mut const_decl = decl_engine.get_constant(decl_ref);
-                        const_decl.replace_self_type(engines, type_id);
                         all_items.push(TyImplItem::Constant(ctx.engines.de().insert(const_decl)));
                     }
                 }
